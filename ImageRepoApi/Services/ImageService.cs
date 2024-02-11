@@ -1,7 +1,9 @@
 ﻿using ImageConverterApi.Models;
+using System.Security.Cryptography;
 using SkiaSharp;
 using Storage;
 using Storage.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace ImageConverterApi.Services
 {
@@ -19,7 +21,21 @@ namespace ImageConverterApi.Services
             if (!Enum.TryParse<SKEncodedImageFormat>(model.TargetFormat, true, out var format))
                 throw new ArgumentException($"Invalid image format: {model.TargetFormat}");
             
-            var resizedImage = ResizeImage(imageData, format, model.TargetWidth, model.TargetHeight);
+            var resizedImage = ResizeImage(imageData, format, model.TargetWidth, model.TargetHeight, model.KeepAspectRatio);
+            string dataHash;
+            using (var sha256 = SHA256.Create())
+            {
+                var hash = sha256.ComputeHash(resizedImage);
+                dataHash = BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+
+            var existingImage = await _dbContext.Images.FirstOrDefaultAsync(i => i.DataHash == dataHash);
+            if (existingImage != null)
+            {
+                // Return the existing image ID and indicate the duplicate was detected
+                return existingImage.ImageId; // Adjustments needed in controller to handle this scenario
+            }
+
             var image = new Image
             {
                 CreatedAt = DateTime.UtcNow,
@@ -27,7 +43,8 @@ namespace ImageConverterApi.Services
                 FileName = fileName,
                 Width = model.TargetWidth,
                 Height = model.TargetHeight,
-                ImageFormat = format.ToString().ToLower()
+                ImageFormat = format.ToString().ToLower(),
+                DataHash = dataHash
             };
 
             _dbContext.Images.Add(image);
@@ -37,11 +54,27 @@ namespace ImageConverterApi.Services
         }
 
 
-        private byte[] ResizeImage(Stream sourceImage, SKEncodedImageFormat newFormat, int newWidth, int newHeight)
+        private byte[] ResizeImage(Stream sourceImage, SKEncodedImageFormat newFormat, int targetWidth, int targetHeight, bool keepAspectRatio = true)
         {
             using var img = SKImage.FromEncodedData(sourceImage);
-            using var resizedImg = ResizeImage(img, newWidth, newHeight);
-            using var data = resizedImg.Encode(newFormat, 100);
+            int newWidth, newHeight;
+            if(keepAspectRatio){
+                float aspectRatio = (float)img.Width / img.Height;
+                if (targetWidth > 0){
+                    newWidth = targetWidth;
+                    newHeight = (int)(targetWidth / aspectRatio);
+                } else if (targetHeight > 0){
+                    newHeight = targetHeight;
+                    newWidth = (int)(targetHeight * aspectRatio);
+                } else {
+                    throw new ArgumentException("Invalid target dimensions");
+                }
+            } else {
+                newWidth = targetWidth;
+                newHeight = targetHeight;
+            }
+            using var resizedImage = ResizeImage(img, newWidth, newHeight);
+            using var data = resizedImage.Encode(newFormat, 100);
             return data.ToArray();
         }
 

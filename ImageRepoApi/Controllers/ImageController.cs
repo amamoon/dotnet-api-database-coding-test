@@ -41,11 +41,13 @@ namespace ImageConverterApi.Controllers
             using var fileStream = imageFile.OpenReadStream();
             var imageId = await _imageService.ImportImage(model, fileStream, imageFile.FileName);
 
+            var alreadyExists = await _dbContext.Images.AnyAsync(i => i.ImageId == imageId);
+
             // Log the upload
             _logger.LogInformation($"Uploaded image {imageId} with format {model.TargetFormat} and dimensions {model.TargetWidth}x{model.TargetHeight}");
 
             // Return the image ID
-            return Ok(new { imageId = imageId.ToString() });
+            return Ok(new { imageId = imageId.ToString(), AlreadyExists = alreadyExists });
         }
 
 
@@ -62,6 +64,34 @@ namespace ImageConverterApi.Controllers
             // Return the image with the correct content type
             return File(image.Data, $"image/{image.ImageFormat}");
         }
+
+        [HttpGet("info/{id}")]
+        public async Task<IActionResult> Info(Guid id)
+        {
+            // Lookup the image by ID
+            var image = await _dbContext.Images.FirstOrDefaultAsync(i => i.ImageId == id);
+
+            // If not found (or invalid ID) return 404
+            if (image == null)
+            {
+                return NotFound();
+            }
+
+            // Construct a response object with the image information
+            var response = new
+            {
+                OriginalFilename = image.FileName,
+                Format = image.ImageFormat,
+                CreatedAt = image.CreatedAt,
+                Width = image.Width,
+                Height = image.Height,
+                StoredSizeInBytes = image.Data?.Length ?? 0
+            };
+
+            // Return the image information as JSON
+            return Ok(response);
+        }
+
 
     }
 }
