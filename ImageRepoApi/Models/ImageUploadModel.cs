@@ -9,4 +9,10 @@ namespace ImageConverterApi.Models
         public string? TargetFormat { get; set; }
         public bool KeepAspectRatio { get; set; }
     }
+
+    public class ImageUploadResult
+    {
+        public string ImageId { get; set; }
+        public bool AlreadyExists { get; set; }
+    }
 }

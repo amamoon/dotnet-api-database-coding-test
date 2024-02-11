@@ -2,8 +2,11 @@
 using ImageConverterApi.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
 using Storage;
 using System.Text.RegularExpressions;
+using System.Security.Claims;
+
 
 namespace ImageConverterApi.Controllers
 {
@@ -14,16 +17,19 @@ namespace ImageConverterApi.Controllers
         private readonly ILogger<ImageController> _logger;
         private readonly IImageService _imageService;
         private readonly DatabaseContext _dbContext;
+        private readonly EncryptionService _encryptionService;
 
-        public ImageController(ILogger<ImageController> logger, IImageService imageService, DatabaseContext dbContext)
+        public ImageController(ILogger<ImageController> logger, IImageService imageService, DatabaseContext dbContext, EncryptionService encryptionService)
         {
             _logger = logger;
             _imageService = imageService;
             _dbContext = dbContext;
+            _encryptionService = encryptionService;
         }
 
 
         [HttpPost]
+        [Authorize]
         public async Task<IActionResult> Upload([FromForm] ImageUploadModel model, IFormFile imageFile)
         {
             // Validate input
@@ -36,18 +42,17 @@ namespace ImageConverterApi.Controllers
             if (imageFile == null || imageFile.Length == 0)
                 return BadRequest("No image file uploaded");
 
-
+            var username = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             // Import the image
             using var fileStream = imageFile.OpenReadStream();
-            var imageId = await _imageService.ImportImage(model, fileStream, imageFile.FileName);
-
-            var alreadyExists = await _dbContext.Images.AnyAsync(i => i.ImageId == imageId);
-
+            
+            var imageResult = await _imageService.ImportImage(model, fileStream, imageFile.FileName, username);
             // Log the upload
-            _logger.LogInformation($"Uploaded image {imageId} with format {model.TargetFormat} and dimensions {model.TargetWidth}x{model.TargetHeight}");
+            if(!imageResult.AlreadyExists) _logger.LogInformation($"Uploaded image {imageResult.ImageId} with format {model.TargetFormat} and dimensions {model.TargetWidth}x{model.TargetHeight}");
+            else _logger.LogInformation($"Duplicate image detected with hash {imageResult.ImageId}");
 
             // Return the image ID
-            return Ok(new { imageId = imageId.ToString(), AlreadyExists = alreadyExists });
+            return Ok(new { imageId = imageResult.ImageId.ToString(), AlreadyExists = imageResult.AlreadyExists });
         }
 
 
@@ -61,8 +66,10 @@ namespace ImageConverterApi.Controllers
             if (image == null || image.Data == null)
                 return NotFound();
 
+            var decryptedData = _encryptionService.Decrypt(image.Data);
+
             // Return the image with the correct content type
-            return File(image.Data, $"image/{image.ImageFormat}");
+            return File(decryptedData, $"image/{image.ImageFormat}");
         }
 
         [HttpGet("info/{id}")]
@@ -85,7 +92,8 @@ namespace ImageConverterApi.Controllers
                 CreatedAt = image.CreatedAt,
                 Width = image.Width,
                 Height = image.Height,
-                StoredSizeInBytes = image.Data?.Length ?? 0
+                StoredSizeInBytes = image.Data?.Length ?? 0,
+                User = image.Username
             };
 
             // Return the image information as JSON

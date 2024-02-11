@@ -5,23 +5,29 @@ using Storage;
 using Storage.Entities;
 using Microsoft.EntityFrameworkCore;
 
+
 namespace ImageConverterApi.Services
 {
     public class ImageService : IImageService
     {
         private readonly DatabaseContext _dbContext;
-
-        public ImageService(DatabaseContext dbContext)
+        private readonly EncryptionService _encryptionService;
+        
+        public ImageService(DatabaseContext dbContext, EncryptionService encryptionService)
         {
             _dbContext = dbContext;
+            _encryptionService = encryptionService;
         }
 
-        public async Task<Guid> ImportImage(ImageUploadModel model, Stream imageData, string fileName)
+        public async Task<ImageUploadResult> ImportImage(ImageUploadModel model, Stream imageData, string fileName, string username)
         {
+
+            if(username == null) throw new ArgumentNullException(nameof(username));
             if (!Enum.TryParse<SKEncodedImageFormat>(model.TargetFormat, true, out var format))
                 throw new ArgumentException($"Invalid image format: {model.TargetFormat}");
             
             var resizedImage = ResizeImage(imageData, format, model.TargetWidth, model.TargetHeight, model.KeepAspectRatio);
+            if(resizedImage == null) throw new InvalidOperationException("Failed to resize image");
             string dataHash;
             using (var sha256 = SHA256.Create())
             {
@@ -33,28 +39,31 @@ namespace ImageConverterApi.Services
             if (existingImage != null)
             {
                 // Return the existing image ID and indicate the duplicate was detected
-                return existingImage.ImageId; // Adjustments needed in controller to handle this scenario
+                return new ImageUploadResult { ImageId = existingImage.ImageId.ToString(), AlreadyExists = true };
             }
+
+            var encryptedData = _encryptionService.Encrypt(resizedImage);
 
             var image = new Image
             {
                 CreatedAt = DateTime.UtcNow,
-                Data = resizedImage,
+                Data = encryptedData,
                 FileName = fileName,
                 Width = model.TargetWidth,
                 Height = model.TargetHeight,
                 ImageFormat = format.ToString().ToLower(),
-                DataHash = dataHash
+                DataHash = dataHash,
+                Username = username
             };
 
             _dbContext.Images.Add(image);
             await _dbContext.SaveChangesAsync();
 
-            return image.ImageId;
+            return new ImageUploadResult { ImageId = image.ImageId.ToString(), AlreadyExists = false };
         }
 
 
-        private byte[] ResizeImage(Stream sourceImage, SKEncodedImageFormat newFormat, int targetWidth, int targetHeight, bool keepAspectRatio = true)
+        private byte[] ResizeImage(Stream sourceImage, SKEncodedImageFormat newFormat, int targetWidth, int targetHeight, bool keepAspectRatio)
         {
             using var img = SKImage.FromEncodedData(sourceImage);
             int newWidth, newHeight;

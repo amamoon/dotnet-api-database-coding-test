@@ -4,6 +4,6 @@ namespace ImageConverterApi.Services
 {
     public interface IImageService
     {
-        Task<Guid> ImportImage(ImageUploadModel model, Stream imageData, string fileName);
+        Task<ImageUploadResult> ImportImage(ImageUploadModel model, Stream imageData, string fileName, string username);
     }
 }
