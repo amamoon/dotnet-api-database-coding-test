@@ -2,6 +2,9 @@ using Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json.Linq;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.Tokens;
 using System.Net;
 
 namespace UnitTests
@@ -38,14 +41,35 @@ namespace UnitTests
             0x63,0x00,0x00,0x00,0x00,0x49,0x45,0x4E,0x44,0xAE,0x42,0x60,0x82
         };
 
+        private string GenerateTestToken()
+        {
+            var key = new SymmetricSecurityKey(Convert.FromBase64String("/zWJuehHtzdRXikn4vZyRSP1N6kdxAfWNMTt5h4r2zE="));
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
+            var token = new JwtSecurityToken(
+                issuer: "ImageApp",
+                audience: "HumanForceImageAPI",
+                expires: DateTime.Now.AddMinutes(30),
+                signingCredentials: creds);
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
         private readonly WebAppFactory _webApp = new WebAppFactory();
 
+        private HttpClient GetAuthenticatedClient()
+        {
+            var client = _webApp.CreateClient();
+            var token = GenerateTestToken();
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            return client;
+        }
 
         [TestMethod]
         public async Task UploadImageShouldReturnBadRequestWhenTargetDimensionsInvalid()
         {
-            var client = _webApp.CreateClient();
+            var client = GetAuthenticatedClient(); // Use authenticated client
+            var token = GenerateTestToken();
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
             var content = new MultipartFormDataContent
             {
                 { new StringContent("png"), "targetFormat" },
@@ -59,7 +83,7 @@ namespace UnitTests
         [TestMethod]
         public async Task UploadImageShouldReturnBadRequestWhenTargetFormatInvalid()
         {
-            var client = _webApp.CreateClient();
+            var client = GetAuthenticatedClient(); // Use authenticated client
             var content = new MultipartFormDataContent
             {
                 { new StringContent("INVALID"), "targetFormat" },
@@ -75,7 +99,7 @@ namespace UnitTests
         [TestMethod]
         public async Task UploadImageShouldReturnBadRequestWhenImageFileMissing()
         {
-            var client = _webApp.CreateClient();
+            var client = GetAuthenticatedClient(); // Use authenticated client
             var content = new MultipartFormDataContent
             {
                 { new StringContent("png"), "targetFormat" },
@@ -88,11 +112,12 @@ namespace UnitTests
             Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
         }
 
-
         [TestMethod]
         public async Task UploadImageShouldSaveToDatabase()
         {
-            var client = _webApp.CreateClient();
+            var client = GetAuthenticatedClient(); // Use authenticated client
+            var token = GenerateTestToken();
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
             var content = new MultipartFormDataContent
             {
                 { new StringContent("png"), "targetFormat" },
@@ -110,14 +135,13 @@ namespace UnitTests
             var responseObj = JObject.Parse(responseStr);
             Assert.IsNotNull(responseObj);
             Assert.IsTrue(responseObj.ContainsKey("imageId"));
-            var imageId = Guid.Parse(responseObj["imageId"]!.ToString());
+            var imageId = Guid.Parse(responseObj["imageId"].ToString());
 
             using var scope = _webApp.Services.CreateScope();
             using var dbContext = scope.ServiceProvider.GetRequiredService<DatabaseContext>();
             var image = await dbContext.Images.FirstOrDefaultAsync(i => i.ImageId == imageId);
             Assert.IsNotNull(image);
         }
-
 
         [TestMethod]
         public async Task GetNonExistentImageIdShouldReturn404()
@@ -126,6 +150,73 @@ namespace UnitTests
             var response = await client.GetAsync("/api/image/get?id=00000000-0000-0000-0000-000000000000");
             Assert.AreEqual(System.Net.HttpStatusCode.NotFound, response.StatusCode);
         }
+
+        // [TestMethod]
+        // public async Task UploadImageShouldAssociateUsernameWithImage()
+        // {
+        //     var client = GetAuthenticatedClient();
+        //     var content = new MultipartFormDataContent
+        //     {
+        //         { new StringContent("100"), "targetWidth" },
+        //         { new StringContent("100"), "targetHeight" },
+        //         { new StringContent("png"), "targetFormat" },
+        //         { new StreamContent(new MemoryStream(TestPngImage)), "imageFile", "test.png" }
+        //     };
+
+        //     var response = await client.PostAsync("/api/image/upload", content);
+        //     Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+
+        //     var responseStr = await response.Content.ReadAsStringAsync();
+        //     var responseObject = JObject.Parse(responseStr);
+        //     Assert.IsTrue(responseObject.ContainsKey("imageId"));
+
+        //     var imageId = Guid.Parse(responseObject["imageId"].ToString());
+        //     using var scope = _webApp.Services.CreateScope();
+        //     using var dbContext = scope.ServiceProvider.GetRequiredService<DatabaseContext>();
+        //     var uploadedImage = await dbContext.Images.FirstOrDefaultAsync(i => i.ImageId == imageId);
+        //     Assert.IsNotNull(uploadedImage);
+
+        //     Assert.AreEqual("testUser", uploadedImage.Username); // Verify the username is correctly associated
+        // }
+
+        [TestMethod]
+        public async Task UploadDuplicateImage_ShouldIndicateAlreadyExists()
+        {
+            var client = GetAuthenticatedClient(); // Ensure this client is authenticated
+
+            // Assuming the test image is predefined in the class
+            var initialUploadContent = new MultipartFormDataContent
+            {
+                { new StringContent("png"), "targetFormat" },
+                { new StringContent("100"), "targetWidth" },
+                { new StringContent("100"), "targetHeight" },
+                { new StreamContent(new MemoryStream(TestPngImage)), "imageFile", "test.png" }
+            };
+
+            // First upload of the image
+            var initialResponse = await client.PostAsync("/api/image/upload", initialUploadContent);
+            Assert.AreEqual(HttpStatusCode.OK, initialResponse.StatusCode);
+
+            // Attempt to upload the same image again to simulate a duplicate upload
+            var duplicateUploadContent = new MultipartFormDataContent
+            {
+                { new StringContent("png"), "targetFormat" },
+                { new StringContent("100"), "targetWidth" },
+                { new StringContent("100"), "targetHeight" },
+                { new StreamContent(new MemoryStream(TestPngImage)), "imageFile", "test.png" }
+            };
+
+            var duplicateResponse = await client.PostAsync("/api/image/upload", duplicateUploadContent);
+            Assert.AreEqual(HttpStatusCode.OK, duplicateResponse.StatusCode);
+
+            // Parse the response to check for the AlreadyExists flag
+            var duplicateResponseContent = await duplicateResponse.Content.ReadAsStringAsync();
+            var duplicateResponseObject = JObject.Parse(duplicateResponseContent);
+            Assert.IsNotNull(duplicateResponseObject);
+            var alreadyExists = duplicateResponseObject["alreadyExists"].Value<bool>();
+            Assert.IsTrue(alreadyExists, "The duplicate image upload did not return an AlreadyExists flag as true.");
+        }
+
 
     }
 }
